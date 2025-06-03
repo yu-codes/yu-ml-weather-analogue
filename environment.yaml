@@ -1,0 +1,23 @@
+name: yu-ml-weather-analogue
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - cartopy
+  - cdsapi
+  - h5py
+  - ipykernel
+  - jupyter
+  - matplotlib
+  - netcdf4
+  - numpy
+  - pandas
+  - python-dotenv
+  - pytorch
+  - pytorch-lightning
+  - scikit-learn
+  - scipy
+  - torchvision
+  - tqdm
+  - xarray
+prefix: /home/yuhan/miniconda/envs/yu-ml-weather-analogue
