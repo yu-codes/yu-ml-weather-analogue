@@ -175,6 +175,8 @@ cython_debug/
 
 # data files
 *.nc
+*.npy
+*.png
 data/raw/
 data/processed/
 
