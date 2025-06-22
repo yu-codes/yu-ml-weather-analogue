@@ -1,0 +1,58 @@
+# Multi-model configuration example
+id: multi_model_comparison
+# Common settings shared by all models
+training:
+  epochs: 100
+  early_stopping: true
+  patience: 10
+  use_wandb: true
+data:
+  variables: [t2m, msl, u850, v850, z500]
+  preprocess: log
+  processed_data_path: data/processed/d2muvmslr_3h_none_log_20012020_weighted.h5
+wandb:
+  project: weather-analogue
+  entity: your-username
+  tags: [multi-model, comparison]
+
+# List of models to train
+models:
+  - id: atmodist_standard_small
+    model:
+      type: atmodist_standard
+      hidden_dim: 64
+      dropout: 0.2
+      distance_metric: wasserstein
+    training:
+      batch_size: 64
+      learning_rate: 0.001
+      
+  - id: atmodist_standard_large
+    model:
+      type: atmodist_standard
+      hidden_dim: 256
+      dropout: 0.2
+      distance_metric: wasserstein
+    training:
+      batch_size: 64
+      learning_rate: 0.001
+      
+  - id: atmodist_revised_small
+    model:
+      type: atmodist_revised
+      hidden_dim: 64
+      dropout: 0.3
+      distance_metric: correlation
+    training:
+      batch_size: 128
+      learning_rate: 0.0005
+      
+  - id: atmodist_revised_large
+    model:
+      type: atmodist_revised
+      hidden_dim: 256
+      dropout: 0.3
+      distance_metric: correlation
+    training:
+      batch_size: 128
+      learning_rate: 0.0005

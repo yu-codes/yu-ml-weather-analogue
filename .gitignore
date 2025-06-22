@@ -182,3 +182,8 @@ data/processed/
 
 # notebooks
 notebooks_thesis/
+
+#training results
+wandb/
+experiments/
+

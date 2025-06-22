@@ -1,29 +1,43 @@
+# %%
 # Standard library imports
+import datetime
+import gc
+import json
 import math
+import os
+import random
+import sys
 
-# PyTorch related imports
-import torch
-import torch.nn as nn
-from torch.nn import functional as F
-
-# PyTorch Lightning related imports
-import pytorch_lightning as pl
-import math
 # Third-party library imports
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import h5py
+import matplotlib.dates
 import matplotlib.pyplot as plt
 from matplotlib.colors import LogNorm  # 导入 LogNorm
 
 import numpy as np
+import pandas as pd
 import seaborn as sns
+import xarray as xr
+from matplotlib.ticker import FormatStrFormatter
+from sklearn import preprocessing
+from tqdm import tqdm
 
 # PyTorch related imports
 import torch
 import torch.nn as nn
+import torchvision
+import torchvision.transforms as transforms
+import torchmetrics
 from torch.nn import functional as F
+from torch.utils.data import Dataset, DataLoader, random_split, Subset
 
 # PyTorch Lightning related imports
 import pytorch_lightning as pl
-
+from pytorch_lightning import Trainer, seed_everything
+from pytorch_lightning.callbacks import ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.loggers import WandbLogger, Logger
 
 from sklearn.metrics import (
     accuracy_score,
@@ -34,10 +48,58 @@ from sklearn.metrics import (
     classification_report,
 )
 
+import csv
+
 # Wandb (Weights & Biases) related imports
 import wandb
 
+# %%
+# current_dir = os.getcwd()
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.abspath(os.path.join(current_dir, os.pardir)))
+from models.atmodist import OrdinalAtmodist, TripletAtmodist
+from dataset.dataset import AtmodistDataset, OrdinalDataset, TripletDataset
+from utils.utils import set_working_directory, load_json_config, ensure_directory_exists
+from utils.utils_data import read_netcdf
+from utils.utils_parsers import feature_map_parser, model_parser
 
+
+try:
+    config = load_json_config("config.json")
+    # print(config)
+except FileNotFoundError as e:
+    print(e)
+os.chdir(current_dir)
+print(f"Working directory changed to: {os.getcwd()}")
+
+seed = 42
+pl.seed_everything(seed)  ## numpy, python, pytorch
+if torch.cuda.is_available():
+    print("cuda is available")
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+# %% [markdown]
+# ## Data Processing
+# 
+
+# %%
+variable_list = ["d2m","u","v", "msl", "r"]
+variables= ''.join(variable_list)
+selected_frequency = 3
+time_unit = "h"
+resample_method = "none"
+preprocessing_method = "standardized" 
+year_range = (2001, 2020)
+variables_path = f"../../../data/processed/{variables}_{selected_frequency}{time_unit}_{resample_method}_{preprocessing_method}_{year_range[0]}{year_range[1]}.h5"
+atmosphere_data = read_netcdf(variables_path)
+
+# %% [markdown]
+# ## Model Building
+
+# %%
 class ShortcutDown(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=1, downscale=False):
         super(ShortcutDown, self).__init__()
@@ -433,3 +495,147 @@ class Atmodist(pl.LightningModule):
             }
         )
         plt.close()
+
+# %% [markdown]
+# ## Selection of Models and Datasets
+# ### (time_interval, num_samples, exp_target; epoch)
+
+# %%
+## Create an AtmodistDataset instance
+project_name = "Atmodist"  ## Atmodist, OrdinalAtmodist, TripletAtmodist
+exp_target = "Formal"
+exp_num = 4
+
+time_interval = 45
+num_samples = len(atmosphere_data)*3
+epochs = 240
+
+if project_name == "Atmodist":
+    model = Atmodist(
+        num_classes=time_interval // selected_frequency,
+        res_in_channels=len(atmosphere_data[0][1]),
+    )
+    dataset = AtmodistDataset(
+        data=atmosphere_data,
+        num_samples=num_samples,
+        selected_frequency=selected_frequency,
+        time_unit=time_unit,
+        time_interval=time_interval,
+    )
+elif project_name == "OrdinalAtmodist":
+    model = OrdinalAtmodist(
+        num_classes=time_interval // selected_frequency,
+        res_in_channels=len(atmosphere_data[0][1]),
+    )
+    dataset = OrdinalDataset(
+        data=atmosphere_data,
+        num_samples=num_samples,
+        selected_frequency=selected_frequency,
+        time_unit=time_unit,
+        time_interval=time_interval,
+    )
+elif project_name == "TripletAtmodist":
+    solpos = pd.read_csv(
+        "../dataset/solar_position.csv",
+        index_col=0,
+    )
+    model = TripletAtmodist(
+        res_in_channels=len(atmosphere_data[0][1]),
+    )
+
+    dataset = TripletDataset(
+        data=atmosphere_data,
+        solpos=solpos,
+        num_samples=num_samples,
+        time_unit=time_unit,
+        time_range=time_interval * 24 * 3600,  # n days in seconds
+        angle_limit=20,  # Lower angle difference for positive samples
+        latitude=52,
+        longitude=-2,
+    )
+else:
+    print("Wrong Project Name !")
+
+# %% [markdown]
+# ## Dataset Processing (batch_size)  
+# 
+
+# %%
+## Create a DataLoader to access the data
+batch_size = 32
+total_size = len(dataset)
+train_set_size = int(0.8 * total_size)
+valid_set_size = total_size - train_set_size
+
+train_dataset, val_dataset = torch.utils.data.random_split(
+    dataset, [train_set_size, valid_set_size]
+)
+
+train_loader = DataLoader(
+    train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True
+)
+val_loader = DataLoader(
+    val_dataset, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True
+)
+print(
+    f"Original Dataset Size: {len(dataset)}, Training Set Size: {len(train_dataset)}, Validation Set Size: {len(val_dataset)}\n"
+    f"Training DataLoader Batches: {len(train_loader)}, Validation DataLoader Batches: {len(val_loader)}"
+)
+
+# %% [markdown]
+# ## Training
+# 
+
+# %%
+model_notes = "trained"  # test, trained
+model_name = f"{exp_target}-{exp_num}-{variables}-{selected_frequency}{time_unit}{time_interval}-{resample_method}-{preprocessing_method}"
+
+model_directory = f"../../../models/{project_name}/{exp_target}"
+checkpoint_dir = f"{model_directory}/checkpoints/"
+model_dir = f"{model_directory}/{model_notes}/"
+ensure_directory_exists(model_directory)
+ensure_directory_exists(checkpoint_dir)
+ensure_directory_exists(model_dir)
+model_path = f"{model_dir}{model_name}.pth"
+## wandb setup
+###os.environ["WANDB_NOTEBOOK_NAME"] = "atmodist.ipynb"
+###wandb.init(project=project_name, entity=user, name=model_name, notes=notes)
+wandb.login(key=config["api_key"]["wandb"])
+wandb_logger = WandbLogger(
+    project=project_name, entity="dylan1120", name=model_name, log_model="all"
+)
+
+## Training setup
+checkpoint_callback = ModelCheckpoint(
+    monitor="val_acc",
+    dirpath=checkpoint_dir,
+    filename=f"{model_name}-{{epoch:02d}}-{{val_acc:.2f}}",
+    save_top_k=1,
+    mode="max",
+)
+
+trainer = Trainer(
+    max_epochs=epochs + 1,
+    logger=wandb_logger,
+    check_val_every_n_epoch=1,
+    callbacks=checkpoint_callback,
+    accelerator="auto",
+)
+trainer.fit(model, train_loader, val_loader)
+
+torch.save(model.state_dict(), model_path)
+wandb.finish()
+
+del model
+del train_loader
+del val_loader
+del train_dataset
+del val_dataset
+del dataset
+del atmosphere_data  # 删除 atmosphere_data 以释放内存
+gc.collect()  # 强制垃圾回收
+
+# %%
+
+
+
